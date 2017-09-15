@@ -1,47 +1,86 @@
-var path = require('path');
-var url  = require('url');
-var nock = require('nock');
+const path = require('path');
+const url  = require('url');
+const nock = require('nock');
 
-var YT_HOST       = 'https://www.youtube.com';
-var VIDEO_PATH    = '/watch?v=';
-var MANIFEST_HOST = 'https://manifest.googlevideo.com';
-var EMBED_PATH = '/embed/';
-var INFO_PATH = '/get_video_info?';
+const YT_HOST       = 'https://www.youtube.com';
+const VIDEO_PATH    = '/watch?v=';
+const MANIFEST_HOST = 'https://manifest.googlevideo.com';
+const M3U8_HOST     = 'https://manifest.googlevideo.com';
+const EMBED_PATH    = '/embed/';
+const INFO_PATH     = '/get_video_info?';
 
 
-module.exports = function(id, opts) {
+before(function() { nock.disableNetConnect(); });
+after(function() { nock.enableNetConnect(); });
+
+exports = module.exports = function(id, opts) {
   opts = opts || {};
   var scopes = [];
-  scopes.push(nock(YT_HOST)
-    .get(VIDEO_PATH + id)
-    .replyWithFile(200,
-      path.resolve(__dirname, 'files/' + id + '/watch.html')));
+  var dirpath = 'files/videos/' + id + (opts.type ? '-' + opts.type : '');
+  var watchType = opts.watch ? '-' + opts.watch : '';
+
+  scopes.push(nock(YT_HOST, { reqheaders: opts.headers })
+    .get(VIDEO_PATH + id + '&hl=en')
+    .replyWithFile(opts.statusCode || 200,
+      path.resolve(__dirname, dirpath + '/watch' + watchType + '.html')));
 
   if (opts.dashmpd) {
-    scopes.push(nock(MANIFEST_HOST)
+    var dashmpdfile = Array.isArray(opts.dashmpd) && opts.dashmpd[2] ?
+      '-' + opts.dashmpd[2] : '';
+    scopes.push(nock(MANIFEST_HOST, { reqheaders: opts.headers })
       .filteringPath(function() { return '/api/manifest/dash/'; })
       .get('/api/manifest/dash/')
-      .replyWithFile(200,
-        path.resolve(__dirname, 'files/' + id + '/dashmpd.xml')));
+      .replyWithFile(opts.dashmpd[1] || 200,
+        path.resolve(__dirname,
+        dirpath + '/dashmpd' + dashmpdfile + '.xml')));
+  }
+
+  if (opts.dashmpd2) {
+    var dashmpd2file = Array.isArray(opts.dashmpd2) && opts.dashmpd2[2] ?
+      '-' + opts.dashmpd2[2] : '';
+    scopes.push(nock(MANIFEST_HOST, { reqheaders: opts.headers })
+      .filteringPath(function() { return '/api/manifest/dash/'; })
+      .get('/api/manifest/dash/')
+      .replyWithFile(opts.dashmpd2[1] || 200,
+        path.resolve(__dirname,
+        dirpath + '/dashmpd2' + dashmpd2file + '.xml')));
+  }
+
+  if (opts.m3u8) {
+    var m3u8file = Array.isArray(opts.m3u8) && opts.m3u8[2] ?
+      '-' + opts.m3u8[2] : '';
+    scopes.push(nock(M3U8_HOST, { reqheaders: opts.headers  })
+      .filteringPath(function() { return '/api/manifest/hls_variant/'; })
+      .get('/api/manifest/hls_variant/')
+      .replyWithFile(opts.m3u8[1] || 200,
+        path.resolve(__dirname,
+        dirpath + '/playlist' + m3u8file + '.m3u8')));
   }
 
   if (opts.player) {
-    scopes.push(nock('http://s.ytimg.com')
-      .get('/yts/jsbin/html5player-' + opts.player +
-        (opts.player.indexOf('new-') > -1 ? '/html5player-new.js' : '.js'))
-      .replyWithFile(200,
-        path.resolve(__dirname, 'files/html5player/' + opts.player + '.js')));
+    var playerfile = Array.isArray(opts.player) && opts.player[2] ?
+      opts.player[2] : opts.player;
+    scopes.push(nock('https://www.youtube.com', { reqheaders: opts.headers })
+      .filteringPath(/\/yts\/jsbin\/player.+$/g, '/yts/jsbin/player')
+      .get('/yts/jsbin/player')
+      .replyWithFile(opts.player[1] || 200,
+        path.resolve(__dirname, dirpath + '/' + playerfile + '.js')));
   }
 
   if (opts.embed) {
-    scopes.push(nock(YT_HOST)
-      .get(EMBED_PATH + id)
-      .replyWithFile(200,
-        path.resolve(__dirname, 'files/' + id + '/embed.html')));
+    var embedfile = Array.isArray(opts.embed) && opts.embed[2] ?
+      '-' + opts.embed[2] : '';
+    scopes.push(nock(YT_HOST, { reqheaders: opts.headers })
+      .get(EMBED_PATH + id + '?hl=en')
+      .replyWithFile(opts.embed[1] || 200,
+        path.resolve(__dirname,
+        dirpath + '/embed' + embedfile + '.html')));
   }
 
   if (opts.get_video_info) {
-    scopes.push(nock(YT_HOST)
+    var infofile = Array.isArray(opts.get_video_info) && opts.get_video_info[2] ?
+      '-' + opts.get_video_info[2] : '';
+    scopes.push(nock(YT_HOST, { reqheaders: opts.headers })
       .filteringPath(function(path) {
         var regexp = /\?video_id=([a-zA-Z0-9_-]+)&(.+)$/;
         return path.replace(regexp, function(_, r) {
@@ -49,8 +88,9 @@ module.exports = function(id, opts) {
         });
       })
       .get(INFO_PATH + 'video_id=' + id)
-      .replyWithFile(200,
-        path.resolve(__dirname, 'files/' + id + '/get_video_info')));
+      .replyWithFile(opts.get_video_info[1] || 200,
+        path.resolve(__dirname,
+        dirpath + '/get_video_info' + infofile)));
   }
 
   return {
@@ -58,13 +98,23 @@ module.exports = function(id, opts) {
       scopes.forEach(function(scope) {
         scope.done();
       });
-    }
+    },
+    urlReply: function(uri, statusCode, body, headers) {
+      scopes.push(exports.url(uri).reply(statusCode, body, headers));
+    },
+    urlReplyWithFile: function(uri, statusCode, file, headers) {
+      scopes.push(exports.url(uri).replyWithFile(statusCode, file, headers));
+    },
+    urlReplyFn: function(uri, fn) {
+      scopes.push(exports.url(uri).reply(fn));
+    },
   };
 };
 
 
-module.exports.url = function(uri) {
+exports.url = function(uri) {
   var parsed = url.parse(uri);
-  return nock(parsed.protocol + '//' + parsed.host)
-    .get(parsed.path);
+  return nock(parsed.protocol + '//' + parsed.host).get(parsed.path);
 };
+
+exports.cleanAll = nock.cleanAll;
